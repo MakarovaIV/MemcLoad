@@ -6,16 +6,17 @@ import sys
 import glob
 import logging
 import collections
+import time
+import asyncio
 from optparse import OptionParser
-# brew install protobuf
-# protoc  --python_out=. ./appsinstalled.proto
-# pip install protobuf
+from threading import Thread
+
 import appsinstalled_pb2
-# pip install python-memcached
 import memcache
 
 NORMAL_ERR_RATE = 0.01
 AppsInstalled = collections.namedtuple("AppsInstalled", ["dev_type", "dev_id", "lat", "lon", "apps"])
+NUM_OF_WORKERS = 8
 
 
 def dot_rename(path):
@@ -35,11 +36,13 @@ def insert_appsinstalled(memc_addr, appsinstalled, dry_run=False):
     # @TODO retry and timeouts!
     try:
         if dry_run:
-            logging.debug("%s - %s -> %s" % (memc_addr, key, str(ua).replace("\n", " ")))
+            pass
+            # time.sleep(1)
+            # logging.debug("%s - %s -> %s" % (memc_addr, key, str(ua).replace("\n", " ")))
         else:
             memc = memcache.Client([memc_addr])
             memc.set(key, packed)
-    except Exception, e:
+    except Exception as e:
         logging.exception("Cannot write to memc %s: %s" % (memc_addr, e))
         return False
     return True
@@ -64,35 +67,64 @@ def parse_appsinstalled(line):
     return AppsInstalled(dev_type, dev_id, lat, lon, apps)
 
 
-def main(options):
+processed = 0
+errors = 0
+
+
+def send_line(line, device_memc, options):
+    global processed, errors
+    line = line.strip()
+    if not line:
+        return
+    appsinstalled = parse_appsinstalled(line)
+    if not appsinstalled:
+        errors += 1
+        return
+    memc_addr = device_memc.get(appsinstalled.dev_type)
+    if not memc_addr:
+        errors += 1
+        logging.error("Unknow device type: %s" % appsinstalled.dev_type)
+        return
+    ok = insert_appsinstalled(memc_addr, appsinstalled, options.dry)
+    if ok:
+        processed += 1
+    else:
+        errors += 1
+
+
+async def process_batch(batch, device_memc, options):
+    tasks = []
+    for line in batch:
+        tasks.append(Thread(target=send_line, args=(line, device_memc, options)))
+    for task in tasks:
+        task.start()
+    for task in tasks:
+        task.join()
+
+
+async def main(options):
+    global processed, errors
     device_memc = {
         "idfa": options.idfa,
         "gaid": options.gaid,
         "adid": options.adid,
         "dvid": options.dvid,
     }
+    # task = asyncio.create_task(process_batch())
     for fn in glob.iglob(options.pattern):
-        processed = errors = 0
         logging.info('Processing %s' % fn)
-        fd = gzip.open(fn)
+        fd = gzip.open(fn, mode='rt')
+        batch = []
         for line in fd:
-            line = line.strip()
-            if not line:
-                continue
-            appsinstalled = parse_appsinstalled(line)
-            if not appsinstalled:
-                errors += 1
-                continue
-            memc_addr = device_memc.get(appsinstalled.dev_type)
-            if not memc_addr:
-                errors += 1
-                logging.error("Unknow device type: %s" % appsinstalled.dev_type)
-                continue
-            ok = insert_appsinstalled(memc_addr, appsinstalled, options.dry)
-            if ok:
-                processed += 1
-            else:
-                errors += 1
+            batch.append(line)
+            if len(batch) == NUM_OF_WORKERS:
+                await process_batch(batch, device_memc, options)
+                batch = []
+
+        if len(batch) > 0:
+            await process_batch(batch, device_memc, options)
+            batch = []
+
         if not processed:
             fd.close()
             dot_rename(fn)
@@ -124,11 +156,12 @@ def prototest():
 
 
 if __name__ == '__main__':
+    start = time.time()
     op = OptionParser()
     op.add_option("-t", "--test", action="store_true", default=False)
     op.add_option("-l", "--log", action="store", default=None)
-    op.add_option("--dry", action="store_true", default=False)
-    op.add_option("--pattern", action="store", default="/data/appsinstalled/*.tsv.gz")
+    op.add_option("--dry", action="store_true", default=True)
+    op.add_option("--pattern", action="store", default="/home/makarovaiv/PycharmProjects/MemcLoad/*.tsv.gz")
     op.add_option("--idfa", action="store", default="127.0.0.1:33013")
     op.add_option("--gaid", action="store", default="127.0.0.1:33014")
     op.add_option("--adid", action="store", default="127.0.0.1:33015")
@@ -142,7 +175,9 @@ if __name__ == '__main__':
 
     logging.info("Memc loader started with options: %s" % opts)
     try:
-        main(opts)
-    except Exception, e:
+        asyncio.run(main(opts))
+    except Exception as e:
         logging.exception("Unexpected error: %s" % e)
         sys.exit(1)
+    timelapse = time.time() - start
+    print("timelapse:", timelapse)
