@@ -22,10 +22,10 @@ pip install -r requirements.txt
 ```
 - Run app
 ```commandline
-python3 memc_load.py
+python3 app/memc_load.py
 ```
 
 ### Run tests
 ```commandline
-python3 -m unittest test.py -v
+python3 -m unittest test/test_memc_load.py -v
 ```

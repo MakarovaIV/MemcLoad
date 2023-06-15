@@ -1,6 +1,6 @@
 import unittest
 
-import appsinstalled_pb2
+from app import appsinstalled_pb2
 
 
 class TestUnits(unittest.TestCase):

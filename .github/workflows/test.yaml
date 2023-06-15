@@ -1,4 +1,4 @@
-name: Run test for memc_load
+name: Run test for app
 
 on: [push]
 
@@ -18,8 +18,8 @@ jobs:
         pip install -r requirements.txt
     - name: Run linter Flake8
       run: |
-        flake8 memc_load.py -v
+        flake8 app/memc_load.py -v
     - name: Run Tests with coverage
       run: |
-        python3 -m coverage run -m unittest test -v
+        python3 -m coverage run -m unittest test/test_memc_load.py -v
         python3 -m coverage report
